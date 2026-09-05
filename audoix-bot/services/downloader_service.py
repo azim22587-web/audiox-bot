@@ -45,47 +45,71 @@ def get_url_hash(url: str) -> str:
 async def download_media_video(url: str) -> dict | None:
     """
     Download video from Instagram, TikTok, YouTube, Pinterest, etc.
-    Automatically ensures video is under Telegram's 50MB limit.
+    Automatically ensures video is under Telegram's 50MB limit with automatic retry strategies.
     """
     url_hash = get_url_hash(url)
     output_template = str(TEMP_DIR / f"vid_{url_hash}.%(ext)s")
     final_video_path = str(TEMP_DIR / f"vid_{url_hash}.mp4")
 
-    def _download():
-        ydl_opts = {
-            'format': 'bestvideo[height<=720][filesize<48M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<48M]/best[filesize<48M]/best',
-            'outtmpl': output_template,
-            'ffmpeg_location': FFMPEG_PATH,
-            'merge_output_format': 'mp4',
-            'concurrent_fragment_downloads': 10,
-            'http_chunk_size': 10485760,
-            'buffersize': 1048576,
-            'socket_timeout': 10,
-            'nocheckcertificate': True,
-            'source_address': '0.0.0.0',
-            'quiet': True,
-            'no_warnings': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _try_dl(opts: dict):
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get('title', 'Video')
             duration = int(info.get('duration') or 0)
             
             actual_path = None
-            if os.path.exists(final_video_path):
+            if os.path.exists(final_video_path) and os.path.getsize(final_video_path) > 1024:
                 actual_path = final_video_path
             else:
                 for f in TEMP_DIR.glob(f"vid_{url_hash}.*"):
-                    if f.suffix.lower() in ['.mp4', '.mkv', '.webm', '.mov']:
+                    if f.suffix.lower() in ['.mp4', '.mkv', '.webm', '.mov'] and f.stat().st_size > 1024:
                         actual_path = str(f)
                         break
 
-            return {
-                'file_path': actual_path,
-                'title': title,
-                'duration': duration,
-                'url_hash': url_hash
-            }
+            if actual_path:
+                return {
+                    'file_path': actual_path,
+                    'title': title,
+                    'duration': duration,
+                    'url_hash': url_hash
+                }
+        return None
+
+    def _download():
+        # Attempt 1: Optimal 720p/MP4 under 48MB
+        opts_1 = {
+            'format': 'bestvideo[height<=720][filesize<48M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<48M]/best[filesize<48M]/best',
+            'outtmpl': output_template,
+            'ffmpeg_location': FFMPEG_PATH,
+            'merge_output_format': 'mp4',
+            'socket_timeout': 15,
+            'nocheckcertificate': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        try:
+            res = _try_dl(opts_1)
+            if res:
+                return res
+        except Exception as e1:
+            logger.warning(f"Media video download attempt 1 failed ({e1}), trying attempt 2...")
+
+        # Attempt 2: Universal best format
+        opts_2 = {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': output_template,
+            'ffmpeg_location': FFMPEG_PATH,
+            'merge_output_format': 'mp4',
+            'socket_timeout': 20,
+            'nocheckcertificate': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        try:
+            return _try_dl(opts_2)
+        except Exception as e2:
+            logger.error(f"Media video download attempt 2 failed: {e2}")
+            return None
 
     loop = asyncio.get_running_loop()
     try:

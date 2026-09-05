@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import speech_recognition as sr
 from config import AUDD_API_KEY, ACRCLOUD_HOST, ACRCLOUD_KEY, ACRCLOUD_SECRET
+from services.shazam_service import recognize_song_shazam
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ async def recognize_with_audd(audio_path: str | Path) -> RecognizedTrack | None:
             data.add_field("file", f, filename="audio.mp3", content_type="audio/mpeg")
             
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
                         res_json = await resp.json()
                         if res_json.get("status") == "success" and res_json.get("result"):
@@ -100,19 +101,33 @@ async def recognize_speech_lyrics(wav_path: str | Path) -> RecognizedTrack | Non
         logger.error(f"Speech recognition error: {e}")
     return None
 
-async def recognize_audio(mp3_path: str | Path, wav_path: str | Path = None) -> RecognizedTrack | None:
+async def recognize_audio(media_path: str | Path, wav_path: str | Path = None) -> RecognizedTrack | None:
     """
     Main recognition entrypoint:
-    1. Try AudD API (if key available)
-    2. Try Speech/Lyrics Recognition (free, recognizes singing & words in Uzbek/Russian)
+    1. Fast Shazam recognition (100% free, detects exact songs, artists, covers)
+    2. Speech / Lyrics recognition (recognizes words spoken/sung in Uzbek/Russian/English)
+    3. AudD API (if key available)
     """
-    # 1. AudD
+    # 1. Shazam Audio Fingerprinting
+    try:
+        shazam_res = await recognize_song_shazam(media_path, duration=15)
+        if shazam_res and shazam_res.get("title"):
+            return RecognizedTrack(
+                title=shazam_res["title"],
+                artist=shazam_res.get("artist", ""),
+                album=shazam_res.get("album", ""),
+                cover_art=shazam_res.get("cover_art", "")
+            )
+    except Exception as e:
+        logger.error(f"Shazam recognition error: {e}")
+
+    # 2. AudD (if configured)
     if AUDD_API_KEY:
-        track = await recognize_with_audd(mp3_path)
+        track = await recognize_with_audd(media_path)
         if track:
             return track
 
-    # 2. Speech / Lyrics recognition from WAV
+    # 3. Speech / Lyrics recognition from WAV
     if wav_path and os.path.exists(wav_path):
         track = await recognize_speech_lyrics(wav_path)
         if track:

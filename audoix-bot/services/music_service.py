@@ -190,9 +190,8 @@ def _search_ytdlp_fallback(query: str, limit: int = 5) -> list[MusicTrack]:
         'no_warnings': True,
         'default_search': 'ytsearch',
         'noplaylist': True,
-        'socket_timeout': 5,
+        'socket_timeout': 6,
         'nocheckcertificate': True,
-        'source_address': '0.0.0.0',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         search_results = ydl.extract_info(f"ytsearch{limit + 3}:{query}", download=False)
@@ -264,7 +263,7 @@ async def search_tracks(query: str, limit: int = 5) -> list[MusicTrack]:
         return []
 
 async def download_track_mp3(track_id_or_url: str, title: str = "", artist: str = "") -> dict | None:
-    """Turbo multi-threaded audio stream download with fast mp3 encoding"""
+    """Robust multi-tier audio stream download with automatic fallback strategies"""
     if not track_id_or_url.startswith("http"):
         url = f"https://www.youtube.com/watch?v={track_id_or_url}"
         unique_id = track_id_or_url
@@ -275,20 +274,49 @@ async def download_track_mp3(track_id_or_url: str, title: str = "", artist: str 
     output_template = str(TEMP_DIR / f"track_{unique_id}.%(ext)s")
     final_mp3_path = str(TEMP_DIR / f"track_{unique_id}.mp3")
 
-    def _download():
-        ydl_opts = {
-            # Multi-threaded turbo audio downloading
-            'format': '140/ba[ext=m4a]/ba[ext=webm]/ba/b[height<=360]/b',
+    def _try_download(opts: dict):
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            nonlocal title, artist
+            extracted_title = info.get('title', 'Musiqa')
+            extracted_uploader = info.get('uploader', 'Audoix')
+            duration = int(info.get('duration') or 0)
+            
+            if not title:
+                title, artist = clean_song_title(extracted_title, extracted_uploader)
+
+            if os.path.exists(final_mp3_path) and os.path.getsize(final_mp3_path) > 1024:
+                try:
+                    try:
+                        audio = EasyID3(final_mp3_path)
+                    except Exception:
+                        audio = EasyID3()
+                        audio.save(final_mp3_path)
+                    audio['title'] = title
+                    audio['artist'] = artist
+                    audio['album'] = "Audoix Music"
+                    audio.save()
+                except Exception as ex:
+                    logger.debug(f"ID3 tagging note: {ex}")
+
+                return {
+                    'file_path': final_mp3_path,
+                    'title': title or "Musiqa",
+                    'artist': artist or "Audoix",
+                    'duration': duration
+                }
+        return None
+
+    def _download_all_attempts():
+        # Attempt 1: Fast modern audio format with client rotation
+        opts_1 = {
+            'format': 'ba[ext=m4a]/ba[ext=webm]/ba/b[height<=360]/b',
             'outtmpl': output_template,
             'ffmpeg_location': FFMPEG_PATH,
-            'concurrent_fragment_downloads': 10,
-            'http_chunk_size': 10485760,
-            'buffersize': 1048576,
             'writethumbnail': False,
-            'socket_timeout': 8,
+            'socket_timeout': 10,
             'nocheckcertificate': True,
-            'source_address': '0.0.0.0',
-            'extractor_args': {'youtube': {'player_client': ['mweb', 'android', 'web']}},
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'tv_embedded', 'web']}},
             'postprocessors': [
                 {
                     'key': 'FFmpegExtractAudio',
@@ -300,46 +328,71 @@ async def download_track_mp3(track_id_or_url: str, title: str = "", artist: str 
             'quiet': True,
             'no_warnings': True,
         }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            nonlocal title, artist
-            extracted_title = info.get('title', 'Musiqa')
-            extracted_uploader = info.get('uploader', 'Audoix')
-            duration = int(info.get('duration') or 0)
-            
-            if not title:
-                title, artist = clean_song_title(extracted_title, extracted_uploader)
+        try:
+            res = _try_download(opts_1)
+            if res:
+                return res
+        except Exception as e1:
+            logger.warning(f"Audio download attempt 1 failed ({e1}), trying attempt 2...")
 
-            if os.path.exists(final_mp3_path):
-                try:
-                    try:
-                        audio = EasyID3(final_mp3_path)
-                    except Exception:
-                        audio = EasyID3()
-                        audio.save(final_mp3_path)
-                    audio['title'] = title
-                    audio['artist'] = artist
-                    audio.save()
-                except Exception as ex:
-                    logger.warning(f"Could not write ID3 tags: {ex}")
+        # Attempt 2: Universal standard format without restrictive extractor args
+        opts_2 = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_template,
+            'ffmpeg_location': FFMPEG_PATH,
+            'socket_timeout': 15,
+            'nocheckcertificate': True,
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }
+            ],
+            'max_filesize': 50 * 1024 * 1024,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        try:
+            res = _try_download(opts_2)
+            if res:
+                return res
+        except Exception as e2:
+            logger.warning(f"Audio download attempt 2 failed ({e2}), trying attempt 3...")
 
-            return {
-                'file_path': final_mp3_path,
-                'title': title or "Musiqa",
-                'artist': artist or "Audoix",
-                'duration': duration
-            }
+        # Attempt 3: Fallback stream download (140/251/18/best)
+        opts_3 = {
+            'format': '140/251/18/best',
+            'outtmpl': output_template,
+            'ffmpeg_location': FFMPEG_PATH,
+            'socket_timeout': 20,
+            'nocheckcertificate': True,
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }
+            ],
+            'max_filesize': 50 * 1024 * 1024,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        try:
+            return _try_download(opts_3)
+        except Exception as e3:
+            logger.error(f"Audio download attempt 3 failed: {e3}")
+            return None
 
     loop = asyncio.get_running_loop()
     try:
-        return await loop.run_in_executor(None, _download)
+        return await loop.run_in_executor(None, _download_all_attempts)
     except Exception as e:
         logger.error(f"Error downloading track {track_id_or_url}: {e}")
         return None
 
 async def download_track_video(track_id_or_url: str) -> dict | None:
-    """Turbo multi-threaded video stream download"""
+    """Multi-tier video stream download with automatic format and size management"""
     if not track_id_or_url.startswith("http"):
         url = f"https://www.youtube.com/watch?v={track_id_or_url}"
         unique_id = track_id_or_url
@@ -350,48 +403,70 @@ async def download_track_video(track_id_or_url: str) -> dict | None:
     output_template = str(TEMP_DIR / f"vid_{unique_id}.%(ext)s")
     final_video_path = str(TEMP_DIR / f"vid_{unique_id}.mp4")
 
-    def _download():
-        ydl_opts = {
-            # Format 18 is pre-muxed 360p/480p MP4 (instant download with 0 ffmpeg merge overhead)
-            'format': '18/bestvideo[height<=720][filesize<48M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<48M]/best[height<=480]/best',
-            'outtmpl': output_template,
-            'ffmpeg_location': FFMPEG_PATH,
-            'merge_output_format': 'mp4',
-            'concurrent_fragment_downloads': 10,
-            'http_chunk_size': 10485760,
-            'buffersize': 1048576,
-            'socket_timeout': 8,
-            'nocheckcertificate': True,
-            'source_address': '0.0.0.0',
-            'extractor_args': {'youtube': {'player_client': ['mweb', 'android', 'web']}},
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _try_download_video(opts: dict):
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get('title', 'Video')
             duration = int(info.get('duration') or 0)
             
             actual_path = None
-            if os.path.exists(final_video_path):
+            if os.path.exists(final_video_path) and os.path.getsize(final_video_path) > 1024:
                 actual_path = final_video_path
             else:
                 for f in TEMP_DIR.glob(f"vid_{unique_id}.*"):
-                    if f.suffix.lower() in ['.mp4', '.mkv', '.webm', '.mov']:
+                    if f.suffix.lower() in ['.mp4', '.mkv', '.webm', '.mov'] and f.stat().st_size > 1024:
                         actual_path = str(f)
                         break
 
-            return {
-                'file_path': actual_path,
-                'title': title,
-                'duration': duration,
-                'unique_id': unique_id
-            }
+            if actual_path:
+                return {
+                    'file_path': actual_path,
+                    'title': title,
+                    'duration': duration,
+                    'unique_id': unique_id
+                }
+        return None
+
+    def _download_all_video_attempts():
+        # Attempt 1: Fast direct MP4 360p/480p/720p
+        opts_1 = {
+            'format': '18/bestvideo[height<=720][filesize<48M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<48M]/best[height<=480]/best',
+            'outtmpl': output_template,
+            'ffmpeg_location': FFMPEG_PATH,
+            'merge_output_format': 'mp4',
+            'socket_timeout': 12,
+            'nocheckcertificate': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'tv_embedded', 'web']}},
+            'quiet': True,
+            'no_warnings': True,
+        }
+        try:
+            res = _try_download_video(opts_1)
+            if res:
+                return res
+        except Exception as e1:
+            logger.warning(f"Video download attempt 1 failed ({e1}), trying attempt 2...")
+
+        # Attempt 2: Universal best MP4
+        opts_2 = {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': output_template,
+            'ffmpeg_location': FFMPEG_PATH,
+            'merge_output_format': 'mp4',
+            'socket_timeout': 18,
+            'nocheckcertificate': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        try:
+            return _try_download_video(opts_2)
+        except Exception as e2:
+            logger.error(f"Video download attempt 2 failed: {e2}")
+            return None
 
     loop = asyncio.get_running_loop()
     try:
-        res = await loop.run_in_executor(None, _download)
+        res = await loop.run_in_executor(None, _download_all_video_attempts)
         if res and res.get('file_path') and os.path.exists(res['file_path']):
             res['file_path'] = await ensure_video_under_50mb(res['file_path'])
             return res

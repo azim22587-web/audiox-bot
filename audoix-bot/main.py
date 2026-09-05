@@ -91,24 +91,22 @@ async def main():
     # 2. Start Web Health Server for Render (if PORT is set)
     await start_web_health_server()
 
-    # 3. Setup AiohttpSession with 300s timeout for large video uploads
-    session = AiohttpSession(timeout=300)
-
-    # 3. Setup Aiogram Bot & Dispatcher
-    bot = Bot(
-        token=BOT_TOKEN,
-        session=session,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
     dp = Dispatcher()
 
-    # 4. Include all routers
+    # 3. Include all routers
     for router in all_routers:
         dp.include_router(router)
 
-    # 5. Continuous auto-reconnect loop (24/7 reliability)
+    # 4. Continuous auto-reconnect loop (24/7 reliability)
     while True:
+        bot = None
         try:
+            session = AiohttpSession(timeout=300)
+            bot = Bot(
+                token=BOT_TOKEN,
+                session=session,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+            )
             bot_info = await bot.get_me()
             logger.info(f"✅ Bot muvaffaqiyatli ishga tushdi: @{bot_info.username} ({bot_info.first_name})")
             await set_bot_commands(bot)
@@ -119,10 +117,14 @@ async def main():
             logger.info("Bot to'xtatildi.")
             break
         except Exception as e:
-            logger.warning(f"⚠️ Tarmoq uzilishi kuzatildi ({e}). 3 soniyadan so'ng avtomatik qayta ulanadi...")
-            await asyncio.sleep(3)
+            logger.warning(f"⚠️ Tarmoq uzilishi kuzatildi ({e}). 5 soniyadan so'ng avtomatik qayta ulanadi...")
+            await asyncio.sleep(5)
         finally:
-            await bot.session.close()
+            if bot and bot.session:
+                try:
+                    await bot.session.close()
+                except Exception:
+                    pass
 
 if __name__ == "__main__":
     try:

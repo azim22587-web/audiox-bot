@@ -81,6 +81,8 @@ async def handle_media_recognition(message: types.Message):
 
             # 5. Search & Download full track
             search_results = await search_tracks(search_query, limit=1)
+            if not search_results and track.title and track.title != search_query:
+                search_results = await search_tracks(track.title, limit=1)
 
             if search_results:
                 best_track = search_results[0]
