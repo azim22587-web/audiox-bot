@@ -1,0 +1,10 @@
+services:
+  audoix-bot:
+    build: .
+    container_name: audoix_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./database.sqlite3:/app/database.sqlite3
+      - ./temp:/app/temp

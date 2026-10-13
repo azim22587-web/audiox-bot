@@ -1,0 +1,32 @@
+# Environment variables (Never commit real API keys to GitHub!)
+.env
+
+# Python cache & virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Temporary media files & downloads
+temp/
+*.tmp
+*.mp3
+*.mp4
+*.m4a
+*.webm
+*.webp
+*.jpg
+*.jpeg
+*.png
+
+# SQLite Database
+*.sqlite3
+*.db
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
